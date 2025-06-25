@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="GSTAT", layout="centered")
 
+# ---------- CSS ----------
 css = """
 <style>
     body {background: linear-gradient(to right, #f4f6f9, #e2e8f0);font-family:'Segoe UI',sans-serif;margin:0;padding:0;}
@@ -26,12 +27,13 @@ st.markdown(css, unsafe_allow_html=True)
 st.markdown('<div class="title">GSTAT ⭐ נתוני כדורגל חכמים</div>', unsafe_allow_html=True)
 
 # ---------- CONFIG ----------
-API_KEY = st.secrets["api_key"]  # נמשך מתוך Secrets של Streamlit Cloud
+API_KEY = st.secrets["api_key"]
 REQUESTS_FILE = "requests_today.json"
 REQUEST_LIMIT = 100
 SEASON_CANDIDATES = ["2024", "2023", "2022", "2021"]
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
+# ---------- REQUEST COUNTER ----------
 def load_requests():
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if os.path.exists(REQUESTS_FILE):
@@ -40,7 +42,7 @@ def load_requests():
     else:
         data = {}
     if today not in data:
-        data[today] = 78
+        data[today] = 26
     return data, today
 
 def save_requests(data):
@@ -57,6 +59,7 @@ def remaining_requests():
     data, today = load_requests()
     return REQUEST_LIMIT - data[today]
 
+# ---------- HELPERS ----------
 @st.cache_data(show_spinner=False)
 def search_player_id(name: str):
     url = "https://api-football-v1.p.rapidapi.com/v3/players"
@@ -103,9 +106,10 @@ def duckduckgo_english_name(query: str) -> str | None:
 
 def normalize_name(name: str) -> str:
     name = name.strip().lower()
-    name = re.sub(r'[^a-zA-Zא-ת\\s]', '', name)
+    name = re.sub(r'[^a-zA-Zא-ת\s]', '', name)
     return name.title()
 
+# ---------- CORE ----------
 def get_player_stats(player_name: str):
     if remaining_requests() <= 0:
         st.error("❌ חרגת מהמכסה היומית (100 בקשות). נסה שוב מחר.")
@@ -131,6 +135,7 @@ def get_player_stats(player_name: str):
             }
     return player_id, None, {}
 
+# ---------- GRAPH ----------
 def plot_goals(goals: int, season: str):
     fig, ax = plt.subplots()
     ax.bar(season, goals, color="mediumseagreen")
@@ -138,6 +143,7 @@ def plot_goals(goals: int, season: str):
     ax.set_ylim(0, max(goals, 10) + 2)
     st.pyplot(fig)
 
+# ---------- UI ----------
 name_input = st.text_input("הכנס שם של שחקן (בעברית או באנגלית)")
 
 if name_input:
@@ -169,6 +175,7 @@ if name_input:
             st.markdown("### 🔼 גרף שערים")
             plot_goals(stats['goals'], season_found)
 
+# ---------- FOOTER ----------
 remaining = remaining_requests()
 st.markdown(
     f"""
