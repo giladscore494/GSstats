@@ -1,4 +1,4 @@
-import streamlit as st
+iimport streamlit as st
 import requests
 import json
 import os
@@ -25,7 +25,7 @@ st.markdown('<div class="title">GSTAT ⭐ נתוני כדורגל חכמים</di
 API_KEY = st.secrets["api_key"]
 REQUEST_LIMIT = 100
 REQUESTS_FILE = "requests_today.json"
-SEASON = "2023"  # עונה אחת בלבד
+SEASON = "2023"
 
 # ---------- REQUEST COUNTER ----------
 def load_requests():
@@ -68,10 +68,14 @@ def get_suggestions(name: str):
 
 @st.cache_data(show_spinner=False)
 def get_player_id(name: str):
+    name_lower = name.lower()
     js = raw_api("players", {"search": name, "season": SEASON})
     for p in js.get("response", []):
-        if name.lower() in p["player"]["name"].lower():
+        full_name = p["player"]["name"].lower()
+        if name_lower in full_name or full_name in name_lower:
             return p["player"]["id"]
+    if js.get("response"):
+        return js["response"][0]["player"]["id"]
     return None
 
 @st.cache_data(show_spinner=False)
