@@ -1,95 +1,125 @@
+# GSTAT Streamlit App – עם חסימה ב־100 בקשות
 import streamlit as st
 import requests
+import json
+import os
+from datetime import datetime, timezone
 import matplotlib.pyplot as plt
 import re
-from datetime import datetime, timezone
 
-# ---------- CONFIG ----------
-API_KEY       = st.secrets["api_key"]
-REQUEST_LIMIT = 100                      # גבול היומי של RapidAPI
-SEASON        = "2023"
-LEAGUE_ID     = 39                       # פרמייר-ליג
-
-# ---------- עיצוב ----------
 st.set_page_config(page_title="GSTAT", layout="centered")
+
+# ---------- CSS ----------
 st.markdown("""
 <style>
- body{background:linear-gradient(to right,#f4f6f9,#e2e8f0);font-family:'Segoe UI',sans-serif;}
- .title{text-align:center;font-size:3em;font-weight:bold;margin:20px}
- .box{background:#fff;padding:24px;border-radius:20px;box-shadow:0 6px 16px rgba(0,0,0,.08)}
- .footer{text-align:center;font-size:.9em;color:#718096;margin-top:30px}
-</style>""", unsafe_allow_html=True)
-st.markdown("<div class='title'>GSTAT ⭐ נתוני כדורגל חכמים</div>", unsafe_allow_html=True)
+    body {background: linear-gradient(to right, #f4f6f9, #e2e8f0);font-family:'Segoe UI',sans-serif;margin:0;}
+    .title {text-align:center;font-size:3em;font-weight:bold;color:#1a202c;margin-top:30px;margin-bottom:10px;}
+    .box {background:white;padding:30px;border-radius:24px;box-shadow:0 8px 20px rgba(0,0,0,0.1);margin:30px auto;max-width:700px;}
+    .footer {text-align:center;font-size:0.9em;color:#718096;margin-top:40px;padding-bottom:20px;}
+</style>
+""", unsafe_allow_html=True)
 
-# ---------- API ----------
-def call_api(endpoint:str, params:dict):
-    url     = f"https://api-football-v1.p.rapidapi.com/v3/{endpoint}"
-    headers = {"X-RapidAPI-Key":API_KEY,
-               "X-RapidAPI-Host":"api-football-v1.p.rapidapi.com"}
-    r = requests.get(url, headers=headers, params=params, timeout=10)
-    r.raise_for_status()
-    remain = r.headers.get("x-ratelimit-requests-remaining", "?")
-    return r.json(), remain
+st.markdown('<div class="title">GSTAT ⭐ נתוני כדורגל חכמים</div>', unsafe_allow_html=True)
 
-def search_player_id(name:str):
-    js,_ = call_api("players",
-            {"search":name, "season":SEASON, "league":LEAGUE_ID})
-    for p in js.get("response",[]):
-        full = p["player"]["name"].lower()
-        if name.lower() in full or full in name.lower():
-            return p["player"]["id"]
-    if js.get("response"):
-        return js["response"][0]["player"]["id"]
-    return None
+# ---------- CONFIG ----------
+API_KEY = st.secrets["api_key"]
+REQUEST_LIMIT = 100
+REQUESTS_FILE = "requests_today.json"
+SEASON = "2023"
+LEAGUE_ID = 39  # פרמייר ליג
 
-def fetch_stats(pid:int):
-    js, remain = call_api("players",
-            {"id":pid, "season":SEASON})
-    if not js.get("response"):
-        return None, remain
-    s = js["response"][0]["statistics"][0]
+# ---------- REQUEST COUNTER ----------
+def load_requests():
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    data = {}
+    if os.path.exists(REQUESTS_FILE):
+        with open(REQUESTS_FILE, "r") as f:
+            data = json.load(f)
+    if today not in data:
+        data[today] = 0
+    return data, today
+
+def add_api_call(cnt: int = 1):
+    data, today = load_requests()
+    data[today] += cnt
+    with open(REQUESTS_FILE, "w") as f:
+        json.dump(data, f)
+
+def remaining_requests():
+    data, today = load_requests()
+    return REQUEST_LIMIT - data[today]
+
+# ---------- API WRAPPER ----------
+def raw_api(endpoint: str, params: dict):
+    if remaining_requests() <= 0:
+        st.error("🔒 הגעת למכסת הבקשות היומית (100). נסה מחר שוב.")
+        st.stop()
+    url = f"https://api-football-v1.p.rapidapi.com/v3/{endpoint}"
+    headers = {
+        "X-RapidAPI-Key": API_KEY,
+        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+    }
+    res = requests.get(url, headers=headers, params=params, timeout=10)
+    res.raise_for_status()
+    add_api_call()
+    return res.json()
+
+# ---------- SEARCH ----------
+def search_player(name: str):
+    js = raw_api("players", {"search": name, "season": SEASON, "league": LEAGUE_ID})
+    return js.get("response", [])
+
+# ---------- STATS ----------
+def extract_stats(response):
+    if not response:
+        return None
+    s = response[0]["statistics"][0]
     return {
-        "team":   s["team"]["name"],
-        "pos":    s["games"]["position"],
-        "apps":   s["games"]["appearences"],
-        "goals":  s["goals"]["total"],
-        "rating": s["games"].get("rating","—")
-    }, remain
+        "team": s["team"]["name"],
+        "position": s["games"]["position"],
+        "appearances": s["games"]["appearences"],
+        "goals": s["goals"]["total"],
+        "rating": s["games"].get("rating", "—")
+    }
 
-clean = lambda t: re.sub(r"[^a-zA-Zא-ת\s]", "", t.strip()).title()
+# ---------- NORMALIZATION ----------
+normalize = lambda n: re.sub(r"[^a-zA-Zא-ת\s]", "", n.strip()).title()
 
 # ---------- UI ----------
-query = st.text_input("הכנס שם שחקן (בעברית או באנגלית)")
-if query:
-    pid = search_player_id(clean(query))
-    if not pid:
-        st.error("שחקן לא נמצא בפרמייר-ליג לעונת 2023.")
+name_in = st.text_input("הכנס שם שחקן (בעברית או באנגלית)")
+
+if name_in:
+    name = normalize(name_in)
+    data = search_player(name)
+    stats = extract_stats(data)
+
+    if stats:
+        st.markdown(f"""
+        <div class='box'>
+            <h3>🌟 {name}</h3>
+            <p><strong>🏟️ קבוצה:</strong> {stats['team']}</p>
+            <p><strong>🕴️ עמדה:</strong> {stats['position']}</p>
+            <p><strong>🎯 הופעות:</strong> {stats['appearances']}</p>
+            <p><strong>⚽ שערים:</strong> {stats['goals']}</p>
+            <p><strong>⭐ דירוג:</strong> {stats['rating']}</p>
+            <p style='color:#4a5568;'>API‑Football | עונת 2023</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if isinstance(stats["goals"], int):
+            fig, ax = plt.subplots()
+            ax.bar("2023", stats["goals"], color="seagreen")
+            ax.set_ylim(0, max(stats["goals"], 10) + 2)
+            ax.set_title("⚽ שערים בעונת 2023")
+            st.pyplot(fig)
     else:
-        data, remaining = fetch_stats(pid)
-        if not data:
-            st.warning("לא נמצאו נתונים סטטיסטיים.")
-        else:
-            st.markdown(f"""
-            <div class='box'>
-              <h4>🌟 {clean(query)}</h4>
-              <p><b>🏟️ קבוצה:</b> {data['team']}</p>
-              <p><b>🕴️ עמדה:</b> {data['pos']}</p>
-              <p><b>🎯 הופעות:</b> {data['apps']}</p>
-              <p><b>⚽ שערים:</b> {data['goals']}</p>
-              <p><b>⭐ דירוג:</b> {data['rating']}</p>
-              <p style='font-size:.85em;color:#4a5568'>
-                 מקור: API-Football | עונת {SEASON}
-              </p>
-            </div>""", unsafe_allow_html=True)
+        st.warning("⚠️ שחקן לא נמצא במאגר לעונת 2023.")
 
-            if isinstance(data["goals"], int):
-                fig, ax = plt.subplots()
-                ax.bar(SEASON, data["goals"], color="seagreen")
-                ax.set_ylim(0, max(data["goals"],10)+2)
-                ax.set_title(f"שערים בעונת {SEASON}")
-                st.pyplot(fig)
+# ---------- FOOTER ----------
+st.markdown(f"""
+<div class='footer'>
+    בקשות שנותרו להיום: {remaining_requests()} / {REQUEST_LIMIT}<br>
+    GSTAT משתמש אך ורק במידע חוקי מ־API‑Football
+</div>
+""", unsafe_allow_html=True)
 
-            st.markdown(
-              f"<div class='footer'>בקשות שנותרו להיום (ע\"פ RapidAPI): "
-              f"{remaining} / {REQUEST_LIMIT}</div>",
-              unsafe_allow_html=True)
