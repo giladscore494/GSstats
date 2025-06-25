@@ -23,6 +23,7 @@ css = """
 </style>
 """
 st.markdown(css, unsafe_allow_html=True)
+
 st.markdown('<div class="title">GSTAT ⭐ נתוני כדורגל חכמים</div>', unsafe_allow_html=True)
 
 # ---------- CONFIG ----------
@@ -41,7 +42,7 @@ def load_requests():
     else:
         data = {}
     if today not in data:
-        data[today] = 22
+        data[today] = 78
     return data, today
 
 def save_requests(data):
@@ -66,8 +67,8 @@ def api_call(player: str, season: str):
         "X-RapidAPI-Key": API_KEY,
         "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
     }
-    r = requests.get(url, headers=headers,
-                     params={"search": player, "season": season}, timeout=10)
+    q = {"search": player, "season": season}
+    r = requests.get(url, headers=headers, params=q, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -88,7 +89,8 @@ def duckduckgo_english_name(query: str) -> str | None:
     return None
 
 def normalize_name(name: str) -> str:
-    name = re.sub(r'[^a-zA-Z\\s]', '', name.strip().lower())
+    name = name.strip().lower()
+    name = re.sub(r'[^a-zA-Z\s]', '', name)
     return name.title()
 
 # ---------- CORE ----------
@@ -103,7 +105,8 @@ def get_stats(player: str, season: str) -> dict:
     if not js.get("response"):
         return {}
 
-    s = js["response"][0]["statistics"][0]
+    p = js["response"][0]
+    s = p["statistics"][0]
     return {
         "team": s["team"]["name"],
         "position": s["games"]["position"],
@@ -133,7 +136,6 @@ name_input = st.text_input("הכנס שם של שחקן (בעברית או בא�
 if name_input:
     player_name = normalize_name(name_input)
     latest_season, latest_stats = find_latest_season(player_name)
-
     if not latest_stats:
         alt_name = duckduckgo_english_name(player_name)
         if alt_name:
@@ -146,7 +148,10 @@ if name_input:
         seasons_options = SEASON_CANDIDATES[:SEASON_CANDIDATES.index(latest_season) + 1]
         season_choice = st.selectbox("בחר עונה (עד 3 אחרונות)", seasons_options, index=0)
 
-        stats = latest_stats if season_choice == latest_season else get_stats(player_name, season_choice)
+        if season_choice != latest_season:
+            stats = get_stats(player_name, season_choice)
+        else:
+            stats = latest_stats
 
         if stats:
             st.markdown(f"""
