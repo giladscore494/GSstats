@@ -10,68 +10,28 @@ st.set_page_config(page_title="GSTAT", layout="centered")
 # ---------- CSS ----------
 css = """
 <style>
-    body {
-        background: linear-gradient(to right, #f4f6f9, #e2e8f0);
-        font-family: 'Segoe UI', sans-serif;
-        margin: 0;
-        padding: 0;
-    }
-    .title {
-        text-align: center;
-        font-size: 3em;
-        font-weight: bold;
-        color: #1a202c;
-        margin-top: 30px;
-        margin-bottom: 10px;
-        letter-spacing: 1px;
-    }
-    .box {
-        background-color: white;
-        padding: 30px;
-        border-radius: 24px;
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
-        margin: 30px auto;
-        max-width: 700px;
-        transition: all 0.3s ease-in-out;
-    }
-    .box:hover {
-        transform: scale(1.01);
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.15);
-    }
-    .footer {
-        text-align: center;
-        font-size: 0.9em;
-        color: #718096;
-        margin-top: 40px;
-        padding-bottom: 20px;
-    }
-    .credit {
-        font-size: 0.95em;
-        color: #4a5568;
-        margin-top: 20px;
-    }
-    a {
-        color: #2b6cb0;
-        text-decoration: none;
-    }
-    a:hover {
-        text-decoration: underline;
-    }
-    ul {
-        padding-left: 20px;
-    }
+    body {background: linear-gradient(to right, #f4f6f9, #e2e8f0);font-family:'Segoe UI',sans-serif;margin:0;padding:0;}
+    .title {text-align:center;font-size:3em;font-weight:bold;color:#1a202c;margin-top:30px;margin-bottom:10px;letter-spacing:1px;}
+    .box {background:white;padding:30px;border-radius:24px;box-shadow:0 8px 20px rgba(0,0,0,0.1);margin:30px auto;max-width:700px;transition:all .3s ease-in-out;}
+    .box:hover {transform:scale(1.01);box-shadow:0 10px 24px rgba(0,0,0,0.15);}
+    .footer {text-align:center;font-size:0.9em;color:#718096;margin-top:40px;padding-bottom:20px;}
+    .credit {font-size:0.95em;color:#4a5568;margin-top:20px;}
+    a {color:#2b6cb0;text-decoration:none;}
+    a:hover {text-decoration:underline;}
 </style>
 """
 st.markdown(css, unsafe_allow_html=True)
 
 st.markdown('<div class="title">GSTAT ⭐ נתוני כדורגל חכמים</div>', unsafe_allow_html=True)
 
-# ---------- CONFIG & LIMITING ----------
+# ---------- CONFIG ----------
 API_KEY = "0e57f2f38dmsh1962d384d4d8f07p1f24bbjsn56d0996a7b97"
 REQUESTS_FILE = "requests_today.json"
 REQUEST_LIMIT = 100
+SEASON_CANDIDATES = ["2024", "2023", "2022", "2021"]  # יורדות בסדר עדיפות
 
-# Load or initialize daily request counter
+# ---------- REQUEST COUNTER ----------
+
 def load_requests():
     today = datetime.today().strftime('%Y-%m-%d')
     if os.path.exists(REQUESTS_FILE):
@@ -83,87 +43,123 @@ def load_requests():
         data[today] = 0
     return data, today
 
+
 def save_requests(data):
     with open(REQUESTS_FILE, 'w') as f:
         json.dump(data, f)
 
-# ---------- API CALL ----------
-def get_api_football_stats(player_name: str, season: str) -> dict:
-    data, today = load_requests()
-    if data[today] >= REQUEST_LIMIT:
-        st.error("❌ חרגת מהמכסה היומית (100 בקשות). נסה שוב מחר.")
-        return {}
 
+def increment_counter():
+    data, today = load_requests()
+    data[today] += 1
+    save_requests(data)
+    return REQUEST_LIMIT - data[today]
+
+
+def remaining_requests():
+    data, today = load_requests()
+    return REQUEST_LIMIT - data[today]
+
+# ---------- API CALL (cached per player+season) ----------
+@st.cache_data(show_spinner=False)
+def api_call(player: str, season: str):
     url = "https://api-football-v1.p.rapidapi.com/v3/players"
-    querystring = {"search": player_name, "season": season}
     headers = {
         "X-RapidAPI-Key": API_KEY,
         "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
     }
-    try:
-        res = requests.get(url, headers=headers, params=querystring, timeout=10)
-        res.raise_for_status()
-        data[today] += 1
-        save_requests(data)
-        stats = {}
-        js = res.json()
-        if js.get("response"):
-            p = js["response"][0]
-            stats["team"] = p["statistics"][0]["team"]["name"]
-            stats["position"] = p["statistics"][0]["games"]["position"]
-            stats["appearances"] = p["statistics"][0]["games"]["appearences"]
-            stats["goals"] = p["statistics"][0]["goals"]["total"]
-            stats["rating"] = p["statistics"][0]["games"].get("rating", "—")
-        return stats
-    except Exception as e:
-        st.error("שגיאה בשליפת הנתונים מה-API")
+    q = {"search": player, "season": season}
+    r = requests.get(url, headers=headers, params=q, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def get_stats(player: str, season: str) -> dict:
+    if remaining_requests() <= 0:
+        st.error("❌ חרגת מהמכסה היומית (100 בקשות). נסה שוב מחר.")
         return {}
+    js = api_call(player, season)
+    increment_counter()
+    if js.get("response"):
+        p = js["response"][0]
+        s = p["statistics"][0]
+        return {
+            "team": s["team"]["name"],
+            "position": s["games"]["position"],
+            "appearances": s["games"]["appearences"],
+            "goals": s["goals"]["total"],
+            "rating": s["games"].get("rating", "—")
+        }
+    return {}
+
+
+def find_latest_season(player: str):
+    for season in SEASON_CANDIDATES:
+        st.session_state["season_try"] = season
+        stats = get_stats(player, season)
+        if stats:
+            return season, stats
+    return None, {}
 
 # ---------- GRAPH ----------
-def plot_goals_bar(goals: int, season: str):
+def plot_goals(goals: int, season: str):
     fig, ax = plt.subplots()
-    ax.bar([season], [goals], color='mediumseagreen')
+    ax.bar(season, goals, color="mediumseagreen")
     ax.set_title(f"⚽ שערים בעונת {season}")
     ax.set_ylim(0, max(goals, 10) + 2)
     st.pyplot(fig)
 
 # ---------- UI ----------
 name_input = st.text_input("הכנס שם של שחקן (באנגלית בלבד)")
-season = st.selectbox("בחר עונה", ["2024", "2023"], index=0)
 
 if name_input:
     player_name = name_input.strip()
-    stats = get_api_football_stats(player_name, season)
+    if "latest_season" not in st.session_state or st.session_state.get("player") != player_name:
+        with st.spinner("טוען את העונה האחרונה..."):
+            latest_season, latest_stats = find_latest_season(player_name)
+            st.session_state["player"] = player_name
+            st.session_state["latest_season"] = latest_season
+            st.session_state["latest_stats"] = latest_stats
 
-    if stats:
-        name_disp = player_name.title()
-        team = stats.get("team", "—")
-        pos = stats.get("position", "—")
-        appearances = stats.get("appearances", "—")
-        goals = stats.get("goals", "—")
-        rating = stats.get("rating", "—")
+    latest_season = st.session_state.get("latest_season")
+    latest_stats = st.session_state.get("latest_stats", {})
 
-        st.markdown(f"""
-        <div class='box'>
-            <h3>🌟 {name_disp}</h3>
-            <p><strong>🏟️ קבוצה:</strong> {team}</p>
-            <p><strong>🕴️ עמדה:</strong> {pos}</p>
-            <p><strong>🎯 הופעות:</strong> {appearances}</p>
-            <p><strong>⚽ שערים:</strong> {goals}</p>
-            <p><strong>⭐ דירוג:</strong> {rating}</p>
-            <p class='credit'>מקור: API-Football (RapidAPI) לעונת {season}</p>
-        </div>
-        """, unsafe_allow_html=True)
+    if not latest_stats:
+        st.warning("לא נמצאו נתונים לשחקן.")
+    else:
+        seasons_options = SEASON_CANDIDATES[:SEASON_CANDIDATES.index(latest_season) + 1]
+        season_choice = st.selectbox("בחר עונה (עד 3 אחרונות)", seasons_options, index=0)
 
-        if isinstance(goals, int):
-            st.markdown("### 🔼 גרף שערים")
-            plot_goals_bar(goals, season)
+        if season_choice == latest_season:
+            stats = latest_stats
+        else:
+            with st.spinner("טוען נתונים לעונה נבחרת..."):
+                stats = get_stats(player_name, season_choice)
+
+        if stats:
+            st.markdown(f"""
+            <div class='box'>
+                <h3>🌟 {player_name.title()}</h3>
+                <p><strong>🏟️ קבוצה:</strong> {stats['team']}</p>
+                <p><strong>🕴️ עמדה:</strong> {stats['position']}</p>
+                <p><strong>🎯 הופעות:</strong> {stats['appearances']}</p>
+                <p><strong>⚽ שערים:</strong> {stats['goals']}</p>
+                <p><strong>⭐ דירוג:</strong> {stats['rating']}</p>
+                <p class='credit'>מקור: API-Football (RapidAPI) לעונת {season_choice}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if isinstance(stats['goals'], int):
+                st.markdown("### 🔼 גרף שערים")
+                plot_goals(stats['goals'], season_choice)
 
 # ---------- FOOTER ----------
+remaining = remaining_requests()
 st.markdown(
-    """
-<div class="footer">
-    GSTAT מציג מידע חוקי ממקורות API רשמיים בלבד. אין שימוש בנתונים מוגני זכויות יוצרים ללא הרשאה.
+    f"""
+<div class='footer'>
+    GSTAT מציג מידע חוקי ממקורות API רשמיים בלבד.<br>
+    בקשות שנותרו להיום: {remaining} / {REQUEST_LIMIT}
 </div>
 """,
     unsafe_allow_html=True,
