@@ -2,8 +2,10 @@ import streamlit as st
 import requests
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import matplotlib.pyplot as plt
+import re
+from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="GSTAT", layout="centered")
 
@@ -21,33 +23,30 @@ css = """
 </style>
 """
 st.markdown(css, unsafe_allow_html=True)
-
 st.markdown('<div class="title">GSTAT ⭐ נתוני כדורגל חכמים</div>', unsafe_allow_html=True)
 
 # ---------- CONFIG ----------
-API_KEY = "0e57f2f38dmsh1962d384d4d8f07p1f24bbjsn56d0996a7b97"
+API_KEY = st.secrets["api_key"]
 REQUESTS_FILE = "requests_today.json"
 REQUEST_LIMIT = 100
-SEASON_CANDIDATES = ["2024", "2023", "2022", "2021"]  # יורדות בסדר עדיפות
+SEASON_CANDIDATES = ["2024", "2023", "2022", "2021"]
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # ---------- REQUEST COUNTER ----------
-
 def load_requests():
-    today = datetime.today().strftime('%Y-%m-%d')
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if os.path.exists(REQUESTS_FILE):
         with open(REQUESTS_FILE, 'r') as f:
             data = json.load(f)
     else:
         data = {}
     if today not in data:
-        data[today] = 0
+        data[today] = 22
     return data, today
-
 
 def save_requests(data):
     with open(REQUESTS_FILE, 'w') as f:
         json.dump(data, f)
-
 
 def increment_counter():
     data, today = load_requests()
@@ -55,12 +54,11 @@ def increment_counter():
     save_requests(data)
     return REQUEST_LIMIT - data[today]
 
-
 def remaining_requests():
     data, today = load_requests()
     return REQUEST_LIMIT - data[today]
 
-# ---------- API CALL (cached per player+season) ----------
+# ---------- HELPERS ----------
 @st.cache_data(show_spinner=False)
 def api_call(player: str, season: str):
     url = "https://api-football-v1.p.rapidapi.com/v3/players"
@@ -68,34 +66,54 @@ def api_call(player: str, season: str):
         "X-RapidAPI-Key": API_KEY,
         "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
     }
-    q = {"search": player, "season": season}
-    r = requests.get(url, headers=headers, params=q, timeout=10)
+    r = requests.get(url, headers=headers,
+                     params={"search": player, "season": season}, timeout=10)
     r.raise_for_status()
     return r.json()
 
+@st.cache_data(show_spinner=False)
+def duckduckgo_english_name(query: str) -> str | None:
+    ddg_url = f"https://html.duckduckgo.com/html/?q={query}+site:wikipedia.org+football"
+    try:
+        res = requests.get(ddg_url, headers=HEADERS, timeout=8)
+        soup = BeautifulSoup(res.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            title = a.get_text(" ", strip=True)
+            if "football" in title.lower():
+                name = title.split("(")[0].strip()
+                if len(name.split()) >= 2:
+                    return name
+    except Exception:
+        pass
+    return None
 
+def normalize_name(name: str) -> str:
+    name = re.sub(r'[^a-zA-Z\\s]', '', name.strip().lower())
+    return name.title()
+
+# ---------- CORE ----------
 def get_stats(player: str, season: str) -> dict:
     if remaining_requests() <= 0:
         st.error("❌ חרגת מהמכסה היומית (100 בקשות). נסה שוב מחר.")
         return {}
+
     js = api_call(player, season)
     increment_counter()
-    if js.get("response"):
-        p = js["response"][0]
-        s = p["statistics"][0]
-        return {
-            "team": s["team"]["name"],
-            "position": s["games"]["position"],
-            "appearances": s["games"]["appearences"],
-            "goals": s["goals"]["total"],
-            "rating": s["games"].get("rating", "—")
-        }
-    return {}
 
+    if not js.get("response"):
+        return {}
+
+    s = js["response"][0]["statistics"][0]
+    return {
+        "team": s["team"]["name"],
+        "position": s["games"]["position"],
+        "appearances": s["games"]["appearences"],
+        "goals": s["goals"]["total"],
+        "rating": s["games"].get("rating", "—")
+    }
 
 def find_latest_season(player: str):
     for season in SEASON_CANDIDATES:
-        st.session_state["season_try"] = season
         stats = get_stats(player, season)
         if stats:
             return season, stats
@@ -110,19 +128,17 @@ def plot_goals(goals: int, season: str):
     st.pyplot(fig)
 
 # ---------- UI ----------
-name_input = st.text_input("הכנס שם של שחקן (באנגלית בלבד)")
+name_input = st.text_input("הכנס שם של שחקן (בעברית או באנגלית)")
 
 if name_input:
-    player_name = name_input.strip()
-    if "latest_season" not in st.session_state or st.session_state.get("player") != player_name:
-        with st.spinner("טוען את העונה האחרונה..."):
-            latest_season, latest_stats = find_latest_season(player_name)
-            st.session_state["player"] = player_name
-            st.session_state["latest_season"] = latest_season
-            st.session_state["latest_stats"] = latest_stats
+    player_name = normalize_name(name_input)
+    latest_season, latest_stats = find_latest_season(player_name)
 
-    latest_season = st.session_state.get("latest_season")
-    latest_stats = st.session_state.get("latest_stats", {})
+    if not latest_stats:
+        alt_name = duckduckgo_english_name(player_name)
+        if alt_name:
+            latest_season, latest_stats = find_latest_season(alt_name)
+            player_name = alt_name if latest_stats else player_name
 
     if not latest_stats:
         st.warning("לא נמצאו נתונים לשחקן.")
@@ -130,16 +146,12 @@ if name_input:
         seasons_options = SEASON_CANDIDATES[:SEASON_CANDIDATES.index(latest_season) + 1]
         season_choice = st.selectbox("בחר עונה (עד 3 אחרונות)", seasons_options, index=0)
 
-        if season_choice == latest_season:
-            stats = latest_stats
-        else:
-            with st.spinner("טוען נתונים לעונה נבחרת..."):
-                stats = get_stats(player_name, season_choice)
+        stats = latest_stats if season_choice == latest_season else get_stats(player_name, season_choice)
 
         if stats:
             st.markdown(f"""
             <div class='box'>
-                <h3>🌟 {player_name.title()}</h3>
+                <h3>🌟 {player_name}</h3>
                 <p><strong>🏟️ קבוצה:</strong> {stats['team']}</p>
                 <p><strong>🕴️ עמדה:</strong> {stats['position']}</p>
                 <p><strong>🎯 הופעות:</strong> {stats['appearances']}</p>
