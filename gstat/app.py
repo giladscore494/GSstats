@@ -1,4 +1,3 @@
-# GSTAT Streamlit App – Cloud‑only version
 import streamlit as st
 import requests
 import json
@@ -6,11 +5,9 @@ import os
 from datetime import datetime, timezone
 import matplotlib.pyplot as plt
 import re
-from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="GSTAT", layout="centered")
 
-# ---------- CSS ----------
 st.markdown("""
 <style>
     body {background: linear-gradient(to right, #f4f6f9, #e2e8f0);font-family:'Segoe UI',sans-serif;margin:0;}
@@ -28,8 +25,7 @@ st.markdown('<div class="title">GSTAT ⭐ נתוני כדורגל חכמים</di
 API_KEY = st.secrets["api_key"]
 REQUEST_LIMIT = 100
 REQUESTS_FILE = "requests_today.json"
-SEASON_CANDIDATES = ["2024", "2023", "2022", "2021"]
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+SEASON = "2023"  # עונה אחת בלבד
 
 # ---------- REQUEST COUNTER ----------
 def load_requests():
@@ -38,17 +34,15 @@ def load_requests():
     if os.path.exists(REQUESTS_FILE):
         with open(REQUESTS_FILE, "r") as f:
             data = json.load(f)
-
     if today not in data:
         data[today] = 0
         with open(REQUESTS_FILE, "w") as f:
             json.dump(data, f)
-
     return data, today
 
-def add_api_call(cnt: int = 1):
+def add_api_call():
     data, today = load_requests()
-    data[today] += cnt
+    data[today] += 1
     with open(REQUESTS_FILE, "w") as f:
         json.dump(data, f)
 
@@ -56,8 +50,7 @@ def remaining_requests():
     data, today = load_requests()
     return REQUEST_LIMIT - data[today]
 
-# ---------- API WRAPPER ----------
-@st.cache_data(show_spinner=False)
+# ---------- API ----------
 def raw_api(endpoint: str, params: dict):
     url = f"https://api-football-v1.p.rapidapi.com/v3/{endpoint}"
     headers = {"X-RapidAPI-Key": API_KEY, "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"}
@@ -66,28 +59,24 @@ def raw_api(endpoint: str, params: dict):
     add_api_call()
     return res.json()
 
-# ---------- AUTOCOMPLETE ----------
 @st.cache_data(show_spinner=False)
-def get_suggestions(txt: str):
-    if len(txt) < 2:
+def get_suggestions(name: str):
+    if len(name) < 2:
         return []
-    js = raw_api("players", {"search": txt, "season": SEASON_CANDIDATES[0]})
-    return [r["player"]["name"] for r in js.get("response", [])][:10]
+    js = raw_api("players", {"search": name, "season": SEASON})
+    return [p["player"]["name"] for p in js.get("response", [])][:10]
 
-# ---------- SEARCH & STATS ----------
 @st.cache_data(show_spinner=False)
-def search_player_id(name: str):
-    for season in SEASON_CANDIDATES:
-        js = raw_api("players", {"search": name, "season": season})
-        for it in js.get("response", []):
-            full = it["player"]["name"].lower()
-            if name.lower() in full or full in name.lower():
-                return it["player"]["id"]
+def get_player_id(name: str):
+    js = raw_api("players", {"search": name, "season": SEASON})
+    for p in js.get("response", []):
+        if name.lower() in p["player"]["name"].lower():
+            return p["player"]["id"]
     return None
 
 @st.cache_data(show_spinner=False)
-def player_stats(pid: int, season: str):
-    js = raw_api("players", {"id": pid, "season": season})
+def get_stats(pid: int):
+    js = raw_api("players", {"id": pid, "season": SEASON})
     if js.get("response"):
         s = js["response"][0]["statistics"][0]
         return {
@@ -102,23 +91,17 @@ def player_stats(pid: int, season: str):
 normalize = lambda n: re.sub(r"[^a-zA-Zא-ת\s]", "", n.strip()).title()
 
 # ---------- UI ----------
-name_in = st.text_input("הכנס שם של שחקן (בעברית או באנגלית)")
-if name_in:
-    sugg = get_suggestions(name_in)
-    pick = st.selectbox("בחירת שחקן מהרשימה", sugg or [name_in], index=0)
-
+name = st.text_input("הכנס שם של שחקן (בעברית או באנגלית)")
+if name:
+    suggestions = get_suggestions(name)
+    pick = st.selectbox("בחר שחקן מהרשימה", suggestions or [name])
     name_norm = normalize(pick)
-    pid = search_player_id(name_norm)
+
+    pid = get_player_id(name_norm)
     if not pid:
-        st.warning("שחקן לא נמצא במאגר.")
+        st.warning("⚠️ שחקן לא נמצא במאגר.")
     else:
-        stats = {}
-        season_found = None
-        for season in SEASON_CANDIDATES:
-            stats = player_stats(pid, season)
-            if stats:
-                season_found = season
-                break
+        stats = get_stats(pid)
         if not stats:
             st.warning("לא נמצאו נתונים סטטיסטיים.")
         else:
@@ -130,23 +113,21 @@ if name_in:
                 <p><strong>🎯 הופעות:</strong> {stats['appearances']}</p>
                 <p><strong>⚽ שערים:</strong> {stats['goals']}</p>
                 <p><strong>⭐ דירוג:</strong> {stats['rating']}</p>
-                <p class='credit'>API‑Football | עונה {season_found}</p>
+                <p class='credit'>API‑Football | עונה {SEASON}</p>
             </div>
             """, unsafe_allow_html=True)
 
             if isinstance(stats["goals"], int):
                 fig, ax = plt.subplots()
-                ax.bar(season_found, stats["goals"], color="mediumseagreen")
+                ax.bar(SEASON, stats["goals"], color="mediumseagreen")
                 ax.set_ylim(0, max(stats["goals"], 10) + 2)
-                ax.set_title(f"⚽ שערים בעונת {season_found}")
+                ax.set_title(f"⚽ שערים בעונת {SEASON}")
                 st.pyplot(fig)
 
 # ---------- FOOTER ----------
-st.markdown(
-    f"""
+st.markdown(f"""
 <div class='footer'>
-    GSTAT מציג מידע חוקי ממקורות API רשמיים בלבד.<br>
-    בקשות שנותרו להיום: {remaining_requests()} / {REQUEST_LIMIT}
+GSTAT מציג מידע חוקי ממקורות API רשמיים בלבד.<br>
+בקשות שנותרו להיום: {remaining_requests()} / {REQUEST_LIMIT}
 </div>
-""",
-    unsafe_allow_html=True)
+""", unsafe_allow_html=True)
