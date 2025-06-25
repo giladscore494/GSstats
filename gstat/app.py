@@ -61,13 +61,29 @@ def remaining_requests():
 
 # ---------- HELPERS ----------
 @st.cache_data(show_spinner=False)
-def api_call(player: str, season: str):
+def search_player_id(name: str):
     url = "https://api-football-v1.p.rapidapi.com/v3/players"
     headers = {
         "X-RapidAPI-Key": API_KEY,
         "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
     }
-    q = {"search": player, "season": season}
+    for season in SEASON_CANDIDATES:
+        q = {"search": name, "season": season}
+        r = requests.get(url, headers=headers, params=q, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("response"):
+                return data["response"][0]["player"]["id"]
+    return None
+
+@st.cache_data(show_spinner=False)
+def api_player_stats(player_id: int, season: str):
+    url = "https://api-football-v1.p.rapidapi.com/v3/players"
+    headers = {
+        "X-RapidAPI-Key": API_KEY,
+        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+    }
+    q = {"id": player_id, "season": season}
     r = requests.get(url, headers=headers, params=q, timeout=10)
     r.raise_for_status()
     return r.json()
@@ -90,37 +106,34 @@ def duckduckgo_english_name(query: str) -> str | None:
 
 def normalize_name(name: str) -> str:
     name = name.strip().lower()
-    name = re.sub(r'[^a-zA-Z\s]', '', name)
+    name = re.sub(r'[^a-zA-Zא-ת\\s]', '', name)
     return name.title()
 
 # ---------- CORE ----------
-def get_stats(player: str, season: str) -> dict:
+def get_player_stats(player_name: str):
     if remaining_requests() <= 0:
         st.error("❌ חרגת מהמכסה היומית (100 בקשות). נסה שוב מחר.")
-        return {}
+        return None, None, {}
 
-    js = api_call(player, season)
+    player_id = search_player_id(player_name)
     increment_counter()
+    if not player_id:
+        return None, None, {}
 
-    if not js.get("response"):
-        return {}
-
-    p = js["response"][0]
-    s = p["statistics"][0]
-    return {
-        "team": s["team"]["name"],
-        "position": s["games"]["position"],
-        "appearances": s["games"]["appearences"],
-        "goals": s["goals"]["total"],
-        "rating": s["games"].get("rating", "—")
-    }
-
-def find_latest_season(player: str):
     for season in SEASON_CANDIDATES:
-        stats = get_stats(player, season)
-        if stats:
-            return season, stats
-    return None, {}
+        js = api_player_stats(player_id, season)
+        increment_counter()
+        if js.get("response"):
+            p = js["response"][0]
+            s = p["statistics"][0]
+            return player_id, season, {
+                "team": s["team"]["name"],
+                "position": s["games"]["position"],
+                "appearances": s["games"]["appearences"],
+                "goals": s["goals"]["total"],
+                "rating": s["games"].get("rating", "—")
+            }
+    return player_id, None, {}
 
 # ---------- GRAPH ----------
 def plot_goals(goals: int, season: str):
@@ -135,40 +148,32 @@ name_input = st.text_input("הכנס שם של שחקן (בעברית או בא�
 
 if name_input:
     player_name = normalize_name(name_input)
-    latest_season, latest_stats = find_latest_season(player_name)
-    if not latest_stats:
+    player_id, season_found, stats = get_player_stats(player_name)
+
+    if not stats:
         alt_name = duckduckgo_english_name(player_name)
         if alt_name:
-            latest_season, latest_stats = find_latest_season(alt_name)
-            player_name = alt_name if latest_stats else player_name
+            player_id, season_found, stats = get_player_stats(alt_name)
+            player_name = alt_name if stats else player_name
 
-    if not latest_stats:
+    if not stats:
         st.warning("לא נמצאו נתונים לשחקן.")
     else:
-        seasons_options = SEASON_CANDIDATES[:SEASON_CANDIDATES.index(latest_season) + 1]
-        season_choice = st.selectbox("בחר עונה (עד 3 אחרונות)", seasons_options, index=0)
+        st.markdown(f"""
+        <div class='box'>
+            <h3>🌟 {player_name}</h3>
+            <p><strong>🏟️ קבוצה:</strong> {stats['team']}</p>
+            <p><strong>🕴️ עמדה:</strong> {stats['position']}</p>
+            <p><strong>🎯 הופעות:</strong> {stats['appearances']}</p>
+            <p><strong>⚽ שערים:</strong> {stats['goals']}</p>
+            <p><strong>⭐ דירוג:</strong> {stats['rating']}</p>
+            <p class='credit'>מקור: API-Football (RapidAPI) לעונת {season_found}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-        if season_choice != latest_season:
-            stats = get_stats(player_name, season_choice)
-        else:
-            stats = latest_stats
-
-        if stats:
-            st.markdown(f"""
-            <div class='box'>
-                <h3>🌟 {player_name}</h3>
-                <p><strong>🏟️ קבוצה:</strong> {stats['team']}</p>
-                <p><strong>🕴️ עמדה:</strong> {stats['position']}</p>
-                <p><strong>🎯 הופעות:</strong> {stats['appearances']}</p>
-                <p><strong>⚽ שערים:</strong> {stats['goals']}</p>
-                <p><strong>⭐ דירוג:</strong> {stats['rating']}</p>
-                <p class='credit'>מקור: API-Football (RapidAPI) לעונת {season_choice}</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-            if isinstance(stats['goals'], int):
-                st.markdown("### 🔼 גרף שערים")
-                plot_goals(stats['goals'], season_choice)
+        if isinstance(stats['goals'], int):
+            st.markdown("### 🔼 גרף שערים")
+            plot_goals(stats['goals'], season_found)
 
 # ---------- FOOTER ----------
 remaining = remaining_requests()
